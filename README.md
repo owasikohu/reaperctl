@@ -1,138 +1,142 @@
 # reaperctl
 
-任意のLua/ReaScriptをCLIからREAPER内で同期実行し、戻り値をJSONで受け取る最小ブリッジです。
-操作コマンドの個別実装、HTTP、socket、MCP、外部Pythonパッケージは不要です。
+CLIエージェントから任意のLua/ReaScriptをREAPER内で実行し、戻り値をJSONで受け取るための小さなファイルIPCブリッジです。
+
+DAW操作ごとの専用コマンドは持ちません。観測と編集はReaScriptに書き、`reaperctl`はそのスクリプトをREAPERへ渡して結果を返します。
 
 ```text
-reaperctl.py → request-<uuid>.lua → bridge.lua (REAPER) → response-<uuid>.json → stdout
+Codex / shell
+    │  reaperctl exec script.lua
+    ▼
+request-<id>.lua ──► bridge.lua in REAPER ──► response-<id>.json
+                           │
+                           └─ reaper.CountTracks / MIDI_InsertNote / TrackFX_* / ...
 ```
 
-## 起動と実行
+現在はPoCです。ローカルで信頼できるLuaを同期実行する用途に絞っています。HTTP、socket、MCP、外部Pythonパッケージは使いません。
 
-必要なものはREAPER 7.xとCLI用Python 3.8以降です。REAPER側のPython設定は不要です。
-このリポジトリのルートに`bridge.lua`、`reaperctl.py`、`examples/`があります。
+## 必要なもの
 
-1. REAPERのActionsウィンドウで「ReaScript: Load」から`bridge.lua`を読み込み、Runします。
-2. 同じディレクトリから次のコマンドを実行します（`python`がない環境では`python3`）。
+- REAPER 7.x
+- CLI側のPython 3.8以降
+- CLIとREAPERの双方から読み書きできるローカルディレクトリ
+
+LuaはREAPERに組み込まれているため、別途インストールする必要はありません。REAPER側のPython設定も不要です。
+
+## クイックスタート
+
+1. このリポジトリをcloneします。
+2. REAPERでActionsウィンドウ（既定では`?`）を開きます。
+3. `ReaScript: Load...`から`bridge.lua`を選び、`Run`します。
+4. リポジトリのルートでHelloを実行します。
 
 ```bash
 python3 reaperctl.py exec examples/hello.lua
-python3 reaperctl.py exec examples/inspect_project.lua
-python3 reaperctl.py exec examples/create_track.lua
-python3 reaperctl.py exec examples/inspect_project.lua
 ```
 
-成功時のstdout例:
+成功するとstdoutに1行のJSONが出ます。
 
 ```json
 {"id":"42af47f39a424248bd6e004c3c30dc43","ok":true,"result":{"message":"Hello from REAPER","version":"7.79/x64"}}
 ```
 
-終了コードは成功`0`、Lua/入出力/応答エラー`1`、引数エラー`2`、timeout`124`、中断`130`です。
-実行結果とエラーはstdoutの1行JSON、引数エラーはargparseのstderrです。
-待機時間は`exec ... --timeout 30`で変更でき、既定値は10秒です。
+続けて、状態取得と編集の往復を確認できます。
 
-停止はREAPERのActionsメニューにある実行中スクリプトから行います。
-同じIPCディレクトリに対してブリッジは1個だけ起動してください。
-通常の起動では自動常駐設定は行いません。REAPER再起動後は再度Runしてください。
+```bash
+python3 reaperctl.py exec examples/inspect_project.lua
+python3 reaperctl.py exec examples/create_track.lua
+python3 reaperctl.py exec examples/inspect_project.lua
+```
 
-## WSLのCLIからWindowsのREAPERを操作する
+`create_track.lua`は現在のプロジェクトに`Agent Test`トラックを追加します。REAPERのUndoで戻せます。
 
-Windows側からWSLのファイルをUNCパスで直接開けます。この環境では次で起動できました。
-既にbridgeが常駐している場合は再実行しないでください。
+bridgeの停止は、REAPERのActionsメニューに表示される実行中スクリプトから行います。REAPERを再起動した場合は、bridgeをもう一度Runしてください。同じIPCディレクトリに対してbridgeを複数起動しないでください。
+
+## WSLからWindows版REAPERを使う
+
+Windows側からWSLのファイルをUNCパスで参照できる環境では、起動済みREAPERへbridgeを直接渡せます。
 
 ```bash
 "/mnt/c/Program Files/REAPER (x64)/reaper.exe" -nonewinst \
   "$(wslpath -w "$PWD/bridge.lua")"
+
 python3 reaperctl.py exec examples/hello.lua
 ```
 
-この場合、Windows側は`\\wsl.localhost\Ubuntu\home\owata\reaperctl\.reaper-agent`、
-WSL側は`/home/owata/reaperctl/.reaper-agent`を読み書きします。同じ実体なのでパス変換をIPCに組み込む必要はありません。
-`-nonewinst`で既存インスタンスにスクリプトを渡す機能は[公式変更履歴](https://www.reaper.fm/download-old.php?ver=6x)に記載されています。
-WSLからWindows実行ファイルを起動できない場合は、WindowsのActions画面から上記UNCパスの`bridge.lua`を読み込んでください。
+この構成では、Windows側の`\\wsl.localhost\<distribution>\...\.reaper-agent`とWSL側の`.reaper-agent/`が同じディレクトリを指します。起動済みbridgeがある場合、上のREAPER起動コマンドを重ねて実行しないでください。
 
-既定のIPCは各ファイルの隣の`.reaper-agent/`です。別の場所に置く場合は、
-REAPER起動前に環境変数`REAPER_AGENT_DIR`をWindowsが解釈できる絶対パスに設定し、
-CLIには同じ実体を指す`--ipc-dir`または`REAPER_AGENT_DIR`を指定します。
-例えばWindowsの`C:\Users\owata\reaper-agent-ipc`とWSLの`/mnt/c/Users/owata/reaper-agent-ipc`です。
-起動済みREAPERには、後からシェルで設定した環境変数は反映されません。
+WindowsからUNCパスを読み込めない場合や、WindowsローカルのIPCディレクトリを使う場合は[WSLと共有パスの設定](docs/TROUBLESHOOTING.md#wslとwindowsでipcパスが一致しない)を参照してください。
 
-## スクリプトの契約
+## CLI
 
-普通のReaScript APIを使い、最後にJSON化できる値を`return`します。
-
-```lua
-return {track_count = reaper.CountTracks(0), tempo = reaper.Master_GetTempo()}
+```text
+usage: reaperctl.py exec [-h] [--timeout SECONDS] [--ipc-dir PATH] script
 ```
 
-`reaper.GetTrack`、`reaper.TrackFX_AddByName`、`reaper.MIDI_GetNote`などをそのまま呼べます。
-利用可能なAPIはインストール済みREAPERと拡張機能に依存します。
-操作・観測のロジックは送信するLuaに書いてください。
-
-- UTF-8のLuaソースを送信します。最初の戻り値だけが`result`になり、戻り値なしは`null`です。
-- 文字列、有限数、boolean、文字列キーのtable、1から連続する配列tableを扱えます。空tableは`{}`です（空配列との区別はしません）。
-- userdata（トラック等のハンドル）、関数、循環参照、疎な配列、NaN/無限大、不正UTF-8はエラーです。ハンドルは名前・GUID等に変換してください。
-- `print`や`ShowConsoleMsg`はCLIの結果として回収しません。結果は`return`してください。
-- 要求は同期完了が前提です。`reaper.defer`、`runloop`、`atexit`の直接呼び出しはエラーにします。非同期処理の完了待ちは実装していません。
-- `get_action_context()`はブリッジのコンテキストです。送信元ファイルの相対パスや独立したAction IDは再現しません。`require`等には必要な絶対パス/package.pathを設定してください。
-- 編集のUndoブロックやUI更新はLua側で管理します。例の`create_track.lua`はUndo点を作ります。
-
-## 実装と公式資料の確認
-
-[REAPERのReaScript解説](https://www.reaper.fm/sdk/reascript/reascript.php)はLua 5.4の組み込みと標準Luaマニュアルを案内しています。
-[Lua公式のload](https://www.lua.org/manual/5.4/manual.html#pdf-load)はテキストチャンクと実行環境を指定できます。
-本実装では`load(source, name, "t", env)`でコンパイルし、環境から実際の`reaper` APIを参照します。
-`xpcall`で構文・実行・JSON変換の失敗を応答にします。実行環境は要求ごとに作りますが、標準ライブラリ等は共有です。
-
-[REAPER API定義](https://www.reaper.fm/sdk/reascript/reascripthelp.html)で確認した関連機能:
-
-- `defer(function)`はREAPERに次回コールバックを登録します。API呼び出しはこのホスト側コールバック内で直列に実行し、外部スレッドからREAPER APIを呼びません。UI/main thread制約を踏まえ、1コールバックにつき1要求です。
-- `AddRemoveReaScript(true, 0, scriptfn, true)`はMainセクションに登録し、command ID（失敗なら0）を返します。`Main_OnCommand(command, 0)`で登録Actionを呼べます。ただしAction呼び出し自体にはLua戻り値の受け口がなく、別途結果IPCが必要です。本PoCでは直接Lua実行が実機で動いたため登録方式は採用していません。
-- 別Luaモジュールの読み込みには`require`も案内されています。
-- `EnumerateFiles(path, -1)`で列挙キャッシュを更新し、0からのインデックスで要求を検出します。
-- deferスクリプトは自動Undo点を作らないため、編集例では明示的にUndo APIを呼びます。
-
-要求ファイルは有効期限コメントとLua本文です。CLIはUUIDと期限を付けて`.tmp`へ書き、close後にrenameして公開します。
-bridgeは`request-<id>.lua`を`running-<id>.lua`へrenameして取得し、期限を確認して実行します。
-応答も`.tmp`からrenameして公開します。CLIはIDを検証し、受け取った応答を削除します。
-並列CLIの応答はIDで分離されますが、要求の実行順は保証しません。観測→編集→観測は順番にCLIを待ってください。
-
-## timeoutと運用上の範囲
-
-timeoutはCLIの待機期限です。未取得要求はCLIが削除し、残った期限切れ要求もbridgeが実行前に拒否します。
-期限は両側のOS時刻で比較するため、WSLとWindowsの時計を合わせてください。期限の丸めには最大約1秒の差があります。
-取得とキャンセルの競合、実行開始後のtimeoutや中断では、編集済みかどうかを断定できません。
-自動再送はしません。再観測してから次の操作を決めてください。
-
-無限ループや長時間の同期処理はREAPERのUIを止めます。強制停止・ロールバック・クラッシュ後の再実行保証はありません。
-処理途中のエラーでも編集が一部残る可能性があります。
-異常終了後の`running-*`や遅着した`response-*`は再実行しません。必要ならbridgeとCLIを止めて該当ファイルを手動削除してください。
-IPCの書き込み失敗ではbridgeがコンソールにエラーを出して停止します。
-
-これは任意コードをREAPERと同じ権限で実行する仕組みで、サンドボックスではありません。
-IPCは自分だけが書き込めるローカルディレクトリに置き、信頼できるLuaを送ってください。
-WindowsのACLや既存ディレクトリの権限は変更しません。ネットワーク共有・同期ストレージは検証対象外です。
-
-## 検証
+例:
 
 ```bash
-python3 -m unittest discover -s tests -v
-# Luaの場所を明示する場合:
-LUA=/path/to/lua python3 -m unittest discover -s tests -v
+python3 reaperctl.py exec edit.lua
+python3 reaperctl.py exec inspect.lua --timeout 30
+python3 reaperctl.py exec inspect.lua --ipc-dir /path/shared/with/reaper
 ```
 
-Lua 5.4で実際のbridgeを実行し、REAPER APIのみをモックに置き換えます。
-往復編集、並列ID対応、構文/実行/シリアライズエラー後の復帰、期限切れ、書き込み途中ファイル無視、timeout、戻り値を検証します。
-Luaがない場合、Luaを使うテストはskipされます。
+`--timeout`の既定値は10秒です。`--ipc-dir`を省略すると、`REAPER_AGENT_DIR`環境変数、またはリポジトリ直下の`.reaper-agent/`を使います。
 
-2026-09-07、この環境でWindows REAPER **7.79/x64**とWSL Python CLIの実機テストも実施しました。
-`hello.lua`が実機バージョンを返し、`inspect_project.lua`→`create_track.lua`→`inspect_project.lua`で
-トラック数が**1→2**となり、追加トラック名が**Agent Test**であることを確認しました。テンポは120でした。
-追加トラックは残してあり、プロジェクトの保存は行っていません。
+終了コード:
 
-別環境では空のテストプロジェクトを開き、冒頭の4コマンドを順に実行してください。
-Helloのバージョン、取得したテンポ、トラック数の+1、画面上のAgent Testを照合します。
-REAPERでUndoしてから再取得すれば、元のトラック数へ戻ることも確認できます。
-bridge停止後に`--timeout 1`で実行し、約1秒で終了コード124になることを確認してください。
-macOS/Linux版REAPER、WindowsローカルIPCへの別配置、REAPER異常終了時の挙動は実機未検証です。
+| コード | 意味 |
+|---:|---|
+| `0` | Luaが完了し、結果を受信した |
+| `1` | Lua、ファイルI/O、または応答形式のエラー |
+| `2` | CLI引数エラー |
+| `124` | timeout |
+| `130` | CLIが中断された |
+
+成功と実行エラーはstdoutの1行JSONです。引数エラーは`argparse`がstderrへ出します。機械処理では終了コードを確認してからJSONの`ok`と`result`または`error`を読んでください。
+
+## ReaScriptを書く
+
+通常のReaScript APIを呼び、最後にJSON化可能な値を`return`します。
+
+```lua
+local tracks = reaper.CountTracks(0)
+local tempo = reaper.Master_GetTempo()
+
+return {
+  track_count = tracks,
+  tempo = tempo,
+}
+```
+
+`reaper.GetTrack`、`reaper.TrackFX_AddByName`、`reaper.MIDI_GetNote`などをそのまま利用できます。変更を加えるスクリプトでは、UndoブロックとUI更新をスクリプト自身で管理してください。
+
+対応する戻り値、同期実行の制約、編集スクリプトの書き方は[ReaScriptガイド](docs/SCRIPTING.md)にまとめています。
+
+## サンプル
+
+| ファイル | 内容 | 副作用・前提 |
+|---|---|---|
+| [`hello.lua`](examples/hello.lua) | REAPER内での実行とバージョンを確認 | 読み取りのみ |
+| [`inspect_project.lua`](examples/inspect_project.lua) | テンポとトラック一覧を返す | 読み取りのみ |
+| [`create_track.lua`](examples/create_track.lua) | `Agent Test`トラックを追加 | プロジェクトを編集、Undo対応 |
+| [`frog_song.lua`](examples/frog_song.lua) | 「かえるの合唱」のMIDIとReaSynthを追加 | プロジェクトを編集、REAPER標準ReaSynthを使用 |
+| [`electronic_16bars.lua`](examples/electronic_16bars.lua) | 140 BPM、A minor、16小節の4トラック曲を生成 | **既存トラックとマーカーを削除**。SIシリーズとVitalが必要、Undo対応 |
+
+最後の2つはbridgeの最小動作確認ではなく、CLIエージェントが観測・編集を繰り返せることを示す応用例です。特に`electronic_16bars.lua`は空のテストプロジェクトで実行してください。
+
+## ドキュメント
+
+- [ReaScriptガイド](docs/SCRIPTING.md) — 戻り値、Undo、観測と編集、制約
+- [IPCプロトコル](docs/PROTOCOL.md) — request/response、原子性、並行実行、timeout
+- [トラブルシューティング](docs/TROUBLESHOOTING.md) — 起動、WSL、timeout、残留ファイル
+- [開発と検証](docs/DEVELOPMENT.md) — テスト、実機確認、設計根拠
+- [Security](SECURITY.md) — 信頼境界と脆弱性報告
+
+## スコープ
+
+このリポジトリが担当するのは「LuaをREAPERで実行し、結果を返す」部分です。DAW操作別のCLI/MCP API、ネットワーク実行、認証、Luaサンドボックス、非同期ReaScript、実行中Luaの強制停止、トランザクションロールバックは現在のスコープ外です。
+
+## License
+
+[BSD 3-Clause License](LICENSE)
