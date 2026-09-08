@@ -1,6 +1,6 @@
 # reaperctl
 
-CLIエージェントから任意のLua/ReaScriptをREAPER内で実行し、戻り値をJSONで受け取るための小さなファイルIPCブリッジです。
+CLIから任意のLua/ReaScriptをREAPER内で実行し、戻り値をJSONで受け取るための小さなファイルIPCブリッジです。
 
 DAW操作ごとの専用コマンドは持ちません。観測と編集はReaScriptに書き、`reaperctl`はそのスクリプトをREAPERへ渡して結果を返します。
 
